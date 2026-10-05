@@ -32,25 +32,29 @@ Redis is required as soon as more than one application instance serves traffic. 
 5. Identity. A signed visitor cookie and a session cookie are read or issued. A cookie with an invalid signature is treated as a new visitor and recorded as a forged identity signal.
 6. Attribution. On page navigations the click identifiers and UTM values are parsed and validated. They are treated as attribution data, never as proof of a real ad click.
 7. Observation. One pipelined Redis round trip runs up to five Lua scripts that update and read the counters for the visitor, the address, the network, the ASN and the click identifier. Results come back in the same call.
-8. Assessment. Detectors emit signals, the scoring function combines them by family and the policy maps the score to a decision. This step is pure computation.
-9. Enforcement. The decision is applied according to the route class and `ENFORCEMENT_MODE`. In monitor mode nothing is enforced but every decision is logged as if it were.
-10. Telemetry. Metrics are updated, notable decisions are logged with flood control, and paid arrivals are queued for batched insertion into PostgreSQL.
+8. Assessment. Detectors emit versioned signals. Scoring combines them by family. An optional model may attach a probability. A shadow policy can be scored without affecting the visitor.
+9. Enforcement. The decision is applied according to the route class and `ENFORCEMENT_MODE` (`shadow`, `monitor`, or `enforce`). Shadow and monitor log without acting.
+10. Telemetry. Metrics, flood-controlled logs, paid visit rows, and assessment events. Operators can label outcomes later.
 
-Measured overhead on a development machine: 0.05 ms median and 0.12 ms at the 99th percentile with the in-process store, and 0.70 ms median and 1.04 ms at the 99th percentile including the Redis round trip to a Docker container. The Redis call dominates, so keep Redis on the same host or in the same availability zone.
+Measured overhead on this development machine (`npm run bench`, in-process store): p50 0.190 ms, p95 0.295 ms, p99 0.382 ms, p99.9 1.425 ms, about 4882 sequential requests per second over 5000 requests. That is not a concurrent load test. Redis was not attached for this run.
 
 ## Components
 
 | Module | Responsibility |
 | --- | --- |
 | `config/env.ts` | Parses every environment variable once, rejects invalid or unsafe production settings, produces a typed `Config` |
-| `risk/types.ts`, `risk/policy.ts` | The reason vocabulary and the single place where weights, thresholds and limits live |
-| `risk/detectors.ts`, `risk/engine.ts` | Signal detection and scoring |
-| `net/*` | IP arithmetic, longest-prefix range tables, client address resolution, network intelligence, crawler verification |
+| `risk/*` | Versioned signals, policy, detectors, scoring, decisions |
+| `observe/*` | Browser consistency, cohorts, behavior features, beacon snapshots |
+| `intel/*` | In-process graph correlation and robust campaign baselines |
+| `model/*` | Feature schema and optional logistic model (advisory unless you load weights) |
+| `net/*` | IP arithmetic, longest-prefix range tables, client address resolution, network intelligence, crawler verification, pluggable intel providers |
 | `identity/*` | Cookie parsing and the signed visitor and session identity |
 | `store/*` | The `IntegrityStore` contract, the Redis implementation, the in-process fallback and the circuit breaker |
 | `guard/*` | Framework-independent inspection and enforcement, plus the local restriction cache |
 | `challenge/*` | Turnstile siteverify client, clearance tokens and the challenge page |
 | `conversion/*` | Lead validation and normalization, the qualification pipeline, SQL, export formats and background maintenance |
+| `ads/*`, `feedback/*`, `upstream/*`, `operator/*`, `events/*` | Evidence, labels, edge-list proposals, investigation queries, assessment persistence |
+| `eval/*` | Synthetic dataset and evaluation CLI |
 | `telemetry/*` | pino logger with redaction, typed security events, Prometheus metrics, paid visit recorder |
 | `http/*` | Express middleware, the internal router under `/_ti` and the lead handler |
 
@@ -96,11 +100,17 @@ The browser never declares a conversion. The lead response carries a `fire` flag
 | Table | One row per | Retention |
 | --- | --- | --- |
 | `ti_paid_visits` | Paid arrival per visitor and click identifier | `PAID_VISIT_RETENTION_DAYS` (90) |
+| `ti_assessments` | Risk assessment events | `ASSESSMENT_RETENTION_DAYS` (45) |
+| `ti_labels` | Operator/CRM/system labels with provenance | Deleted with retention sweeps |
 | `ti_conversion_attempts` | Lead submission attempt that passed the preliminary check | `ATTEMPT_RETENTION_DAYS` (30) |
 | `ti_leads` | Accepted lead | `LEAD_RETENTION_DAYS` (365) |
 | `ti_conversions` | Conversion record for a lead | Deleted with its lead |
 
 Raw IP addresses are stored only on paid visits that scored at or above the monitor threshold, because those are the rows an operator may need for Google Ads IP exclusions. Everything else uses the keyed address hash and the network prefix. Lead contact data is stored because the business needs the lead; logs never contain it, enforced by the logger redaction list.
+
+## Operator API
+
+Bearer `ADMIN_TOKEN`. Investigation surfaces: `/_ti/admin/summary.json`, `sessions.json`, `campaigns.json`, `clusters.json`, `exclusions.json`, `evidence/<id>.json`, `edge-lists.json`, conversion qualify/disqualify, and `POST /_ti/admin/labels`. Evidence bundles hash click identifiers and state that they cannot reverse a Google Ads charge.
 
 ## Failure modes
 
@@ -112,3 +122,6 @@ Raw IP addresses are stored only on paid visits that scored at or above the moni
 | Network data missing or stale | Classification continues with what is available. Crawler impersonation is only asserted when range data is fresh or reverse DNS confirms it. |
 | ASN unavailable | Assessments are marked `reduced` confidence; ASN-based signals are skipped. |
 | Bug in the guard | The middleware logs the error and lets the request through. A security layer must not become the outage. |
+| Graph/baseline process restart | In-process sketches reset. Per-request scoring and Redis counters continue. Cluster signals may disappear until they rebuild. |
+| Model file missing or invalid | Heuristic policy is used. Fraud probability is omitted. |
+| Edge transport headers without the edge secret | TLS/JA3/JA4/HTTP2 fields are ignored. |

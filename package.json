@@ -1,6 +1,6 @@
 ﻿{
   "name": "traffic-integrity",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Paid traffic integrity layer: bot and click-abuse telemetry, progressive enforcement and server-validated conversions for sites that buy Google Ads traffic",
   "private": true,
   "type": "module",
@@ -46,11 +46,16 @@
     "typecheck": "tsc -p tsconfig.json",
     "lint": "eslint .",
     "test": "node --test --test-concurrency=1 \"test/**/*.test.ts\"",
+    "eval": "node src/eval/cli.ts",
+    "eval:report": "node src/eval/cli.ts --json --out=docs/evaluation-results.json",
+    "adversarial": "node --test --test-concurrency=1 \"test/adversarial.test.ts\"",
     "bench": "node test/bench.ts",
+    "coverage": "node --test --experimental-test-coverage --test-coverage-lines=70 --test-concurrency=1 \"test/**/*.test.ts\"",
+    "sbom": "npm sbom --sbom-format cyclonedx",
     "migrate": "node --env-file-if-exists=.env dist/cli/migrate.js",
     "intel:refresh": "node dist/cli/refresh-intel.js",
     "conversions:export": "node --env-file-if-exists=.env dist/cli/export-conversions.js",
-    "check": "npm run typecheck && npm run lint && npm test && npm run build"
+    "check": "npm run typecheck && npm run lint && npm test && npm run eval && npm run build"
   },
   "dependencies": {
     "@prometheus-io/client": "^0.16.1",

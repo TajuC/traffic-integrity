@@ -5,7 +5,7 @@ import { buildPolicy, type RiskPolicy } from '../risk/policy.ts';
 
 export type Environment = 'development' | 'test' | 'production';
 export type EdgeMode = 'off' | 'monitor' | 'enforce';
-export type EnforcementMode = 'monitor' | 'enforce';
+export type EnforcementMode = 'shadow' | 'monitor' | 'enforce';
 export type ConversionChallenge = 'always' | 'risk';
 
 export interface Config {
@@ -50,8 +50,11 @@ export interface Config {
   };
   readonly admin: { readonly token: string } | undefined;
   readonly logging: { readonly level: string; readonly assessmentSampleRate: number };
-  readonly retention: { readonly paidVisitDays: number; readonly attemptDays: number; readonly leadDays: number };
+  readonly retention: { readonly paidVisitDays: number; readonly attemptDays: number; readonly leadDays: number; readonly assessmentDays: number };
   readonly policy: RiskPolicy;
+  readonly shadowPolicy: RiskPolicy | undefined;
+  readonly modelPath: string | undefined;
+  readonly ads: { readonly cpcUsd: number | undefined; readonly applyChanges: boolean };
   readonly warnings: readonly string[];
 }
 
@@ -92,8 +95,10 @@ const schema = z.object({
   TURNSTILE_TIMEOUT_MS: z.coerce.number().int().min(250).max(10_000).default(2500),
   TURNSTILE_MAX_AGE_SECONDS: z.coerce.number().int().min(30).max(300).default(300),
 
-  ENFORCEMENT_MODE: z.enum(['monitor', 'enforce']).default('monitor'),
+  ENFORCEMENT_MODE: z.enum(['shadow', 'monitor', 'enforce']).default('monitor'),
   RISK_POLICY_PATH: z.string().optional(),
+  SHADOW_POLICY_PATH: z.string().optional(),
+  MODEL_PATH: z.string().optional(),
   RISK_MONITOR_THRESHOLD: threshold,
   RISK_CHALLENGE_THRESHOLD: threshold,
   RISK_RESTRICT_THRESHOLD: threshold,
@@ -131,6 +136,9 @@ const schema = z.object({
   PAID_VISIT_RETENTION_DAYS: z.coerce.number().int().min(1).max(730).default(90),
   ATTEMPT_RETENTION_DAYS: z.coerce.number().int().min(1).max(730).default(30),
   LEAD_RETENTION_DAYS: z.coerce.number().int().min(1).max(3650).default(365),
+  ASSESSMENT_RETENTION_DAYS: z.coerce.number().int().min(1).max(365).default(45),
+  GOOGLE_ADS_CPC_USD: z.coerce.number().min(0).max(1000).optional(),
+  GOOGLE_ADS_APPLY_CHANGES: flag.default(false),
 });
 
 export class ConfigError extends Error {
@@ -209,6 +217,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Config {
   if (production && env.DATABASE_URL?.startsWith('pglite:')) issues.push('DATABASE_URL: pglite is for local development only');
 
   let policy: RiskPolicy | undefined;
+  let shadowPolicy: RiskPolicy | undefined;
   try {
     policy = buildPolicy({
       file: env.RISK_POLICY_PATH ? JSON.parse(readFileSync(env.RISK_POLICY_PATH, 'utf8')) : undefined,
@@ -222,6 +231,13 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Config {
   } catch (error) {
     issues.push(`RISK_POLICY: ${error instanceof Error ? error.message : String(error)}`);
   }
+  if (env.SHADOW_POLICY_PATH) {
+    try {
+      shadowPolicy = buildPolicy({ file: JSON.parse(readFileSync(env.SHADOW_POLICY_PATH, 'utf8')) });
+    } catch (error) {
+      issues.push(`SHADOW_POLICY: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
 
   if (issues.length > 0 || !policy) throw new ConfigError(issues);
 
@@ -229,7 +245,9 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Config {
   if (!env.TURNSTILE_SECRET_KEY) {
     warnings.push('Turnstile is not configured: challenges degrade to monitoring and conversions are held for review');
   }
-  if (env.ENFORCEMENT_MODE === 'monitor') warnings.push('ENFORCEMENT_MODE=monitor: decisions are logged but not enforced');
+  if (env.ENFORCEMENT_MODE === 'monitor' || env.ENFORCEMENT_MODE === 'shadow') {
+    warnings.push(`ENFORCEMENT_MODE=${env.ENFORCEMENT_MODE}: decisions are logged but not enforced`);
+  }
   if (production && env.CLOUDFLARE_MODE === 'off') warnings.push('CLOUDFLARE_MODE=off: edge signals are ignored');
 
   return {
@@ -282,8 +300,12 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Config {
       paidVisitDays: env.PAID_VISIT_RETENTION_DAYS,
       attemptDays: env.ATTEMPT_RETENTION_DAYS,
       leadDays: env.LEAD_RETENTION_DAYS,
+      assessmentDays: env.ASSESSMENT_RETENTION_DAYS,
     },
     policy,
+    shadowPolicy,
+    modelPath: env.MODEL_PATH,
+    ads: { cpcUsd: env.GOOGLE_ADS_CPC_USD, applyChanges: env.GOOGLE_ADS_APPLY_CHANGES },
     warnings,
   };
 }

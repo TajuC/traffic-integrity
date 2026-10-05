@@ -1,6 +1,6 @@
 # Traffic Integrity
 
-Server-side protection and measurement for websites that buy traffic through Google Ads. **v1.0.0**.
+Server-side protection and measurement for websites that buy traffic through Google Ads. **v1.1.0**.
 
 [![CI](https://github.com/TajuC/traffic-integrity/actions/workflows/ci.yml/badge.svg)](https://github.com/TajuC/traffic-integrity/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
@@ -12,11 +12,14 @@ enforcement without putting a CAPTCHA in front of ordinary visitors, records
 privacy-conscious forensic telemetry for every paid arrival, and reports only
 server-validated, qualified leads back to Google Ads as conversions.
 
+It is a detection, mitigation, conversion-integrity, and evidence platform.
 It does not and cannot stop Google from recording a paid click. The click is billed
 before the visitor reaches your origin. What this system does is make abuse
 expensive, keep fake leads out of the conversion data that trains Smart Bidding,
 and give you the evidence needed for IP exclusions and invalid-click investigations.
 The full list of residual risks is in [docs/security-review.md](docs/security-review.md).
+Measured synthetic detector numbers, labeled as synthetic, are in
+[docs/evaluation-results.md](docs/evaluation-results.md).
 
 ## What ships
 
@@ -92,10 +95,7 @@ its own.
 
 **Measured overhead**
 
-On a development machine, guard overhead is 0.05 ms median and 0.12 ms at p99
-with the in-process store, and 0.70 ms median and 1.04 ms at p99 including a
-Redis round trip to a local container. Redis dominates, so keep it on the same
-host or in the same availability zone.
+On this development machine, `npm run bench` against the in-process store reported p50 0.190 ms, p95 0.295 ms, p99 0.382 ms, p99.9 1.425 ms, about 4882 sequential requests per second over 5000 requests. That is not a concurrent load test and Redis was not attached. Re-run `npm run bench` with `TEST_REDIS_URL` set to measure the Redis path on your hardware.
 
 ## Requirements
 
@@ -174,11 +174,16 @@ a complete page.
 | `npm start` | Run the compiled server |
 | `npm test` | Run the test suite (set `TEST_REDIS_URL` to include the Redis suites) |
 | `npm run typecheck` / `npm run lint` | Static checks |
-| `npm run check` | Typecheck, lint, test, and build in one step |
+| `npm run check` | Typecheck, lint, test, synthetic eval, and build |
 | `npm run migrate` | Apply database migrations |
 | `npm run intel:refresh` | Download crawler, cloud, Tor, and optionally Apple Private Relay ranges (`-- --with-private-relay`) |
 | `npm run conversions:export` | Write the Google Ads conversion CSV to stdout or `-- --out file.csv` |
-| `npm run bench` | Measure guard overhead per request |
+| `npm run bench` | Measure guard overhead per request (p50/p95/p99/p99.9) |
+| `npm run eval` | Score the synthetic labeled dataset and print metrics |
+| `npm run eval:report` | Write the same report as JSON |
+| `npm run adversarial` | HTTP attacker-class tests, including documented origin-side gaps |
+| `npm run coverage` | Test suite with V8 coverage (70% line floor) |
+| `npm run sbom` | CycloneDX SBOM for production dependencies |
 
 ## Repository layout
 
@@ -186,6 +191,15 @@ a complete page.
 | --- | --- |
 | `src/config` | Environment schema and typed configuration |
 | `src/risk` | Signal vocabulary, policy, detectors, scoring, and decisions |
+| `src/observe` | Browser consistency, cohorts, behavior features, snapshot cache |
+| `src/intel` | In-process graph correlation and robust campaign baselines |
+| `src/model` | Feature schema and optional logistic model |
+| `src/eval` | Synthetic dataset, metrics, and evaluation CLI |
+| `src/ads` | Evidence bundles and campaign recommendations |
+| `src/feedback` | Outcome labels with provenance |
+| `src/upstream` | Short-lived edge block/challenge proposals |
+| `src/operator` | Investigation queries for the admin API |
+| `src/events` | Assessment event persistence |
 | `src/net` | IP parsing, range tables, client address resolution, network intelligence, crawler verification |
 | `src/identity`, `src/attribution`, `src/request` | Visitor and session identity, paid attribution, request classification and user agent parsing |
 | `src/store` | Redis Lua counters, in-process fallback, and circuit breaker |
@@ -211,6 +225,9 @@ a complete page.
 | [docs/tuning.md](docs/tuning.md) | What to measure before tightening enforcement, with queries |
 | [docs/security-review.md](docs/security-review.md) | Adversarial review, fixes made, residual risks, and limitations |
 | [docs/testing.md](docs/testing.md) | Test inventory and scenario coverage |
+| [docs/research-methodology.md](docs/research-methodology.md) | Threat model, hypotheses, evaluation, labeling, bias |
+| [docs/evaluation-results.md](docs/evaluation-results.md) | Numbers from `npm run eval` only. Synthetic, not production accuracy |
+| [docs/production-readiness.md](docs/production-readiness.md) | Honest scorecard and first-deploy sequence |
 
 ## Quality bar
 
@@ -220,9 +237,11 @@ Every change must pass the same gates CI enforces, before review:
 npm run check
 ```
 
-That is typecheck, lint, the Node test runner, and a production build. With
+That is typecheck, lint, the Node test runner, the synthetic evaluation CLI, and a production build. With
 Redis available, set `TEST_REDIS_URL` so the contract tests and the
-multi-instance suite run as well. New behavior needs tests.
+multi-instance suite run as well. With PostgreSQL available, set
+`TEST_DATABASE_URL` so conversion and migration tests run against a real
+server. New behavior needs tests.
 
 The default branch is protected: a change reaches `main` only through a pull
 request whose required status checks pass.

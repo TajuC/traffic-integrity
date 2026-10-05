@@ -1,9 +1,16 @@
+import { networkVelocityExempt } from '../observe/cohort.ts';
 import { isChromium, type OsFamily } from '../request/user-agent.ts';
 import type { RiskContext } from './context.ts';
 import type { RiskPolicy } from './policy.ts';
-import type { Evidence, RiskReason } from './types.ts';
+import { RISK_REASONS, type Evidence, type RiskReason } from './types.ts';
 
-export type Emit = (reason: RiskReason, evidence?: Evidence) => void;
+export interface SignalExtras {
+  readonly confidence?: number;
+  readonly rawValue?: number | string | boolean;
+  readonly normalizedValue?: number;
+}
+
+export type Emit = (reason: RiskReason, evidence?: Evidence, extras?: SignalExtras) => void;
 export type Detector = (ctx: RiskContext, policy: RiskPolicy, emit: Emit) => void;
 
 const PLATFORM_HINTS: Readonly<Record<string, OsFamily>> = {
@@ -21,24 +28,32 @@ const PAGE_LIKE = new Set(['page', 'conversion', 'action']);
 
 export const detectNetwork: Detector = (ctx, policy, emit) => {
   if (ctx.edgeRequired && !ctx.address.viaEdge) emit('network.origin_bypass', { via: ctx.address.via });
-  if (ctx.network.category === 'hosting') emit('network.hosting', { provider: ctx.network.provider ?? 'unknown' });
+  if (ctx.network.category === 'hosting' || ctx.network.category === 'cloud') {
+    emit('network.hosting', { provider: ctx.network.provider ?? 'unknown', category: ctx.network.category });
+  }
   if (ctx.network.category === 'tor') emit('network.tor');
+  if (ctx.network.category === 'vpn') emit('network.vpn', { provider: ctx.network.provider ?? 'unknown' }, { confidence: 0.5 });
+  if (ctx.network.category === 'residential_proxy') emit('network.residential_proxy', { provider: ctx.network.provider ?? 'unknown' }, { confidence: 0.55 });
+  if (ctx.network.category === 'public_proxy') emit('network.public_proxy', { provider: ctx.network.provider ?? 'unknown' }, { confidence: 0.5 });
 
   const observed = ctx.observation;
   if (!observed) return;
   const limits = policy.limits;
+  const nat = ctx.cohort !== undefined && networkVelocityExempt(ctx.cohort);
 
   const address = limits.addressRequestsPerMinute;
   const addressLimit = address.base + address.perMember * observed.address.population;
   const addressRatio = observed.address.requestRate / addressLimit;
   const addressEvidence = { rate: round(observed.address.requestRate), limit: addressLimit };
-  if (addressRatio >= address.extremeFactor) emit('network.address_velocity_extreme', addressEvidence);
-  else if (addressRatio > 1) emit('network.address_velocity', addressEvidence);
+  if (!nat) {
+    if (addressRatio >= address.extremeFactor) emit('network.address_velocity_extreme', addressEvidence);
+    else if (addressRatio > 1) emit('network.address_velocity', addressEvidence);
+  }
 
   if (ctx.network.category === 'privacy_relay') return;
   const population = observed.network.population;
 
-  if (ctx.identity?.origin !== 'returning') {
+  if (ctx.identity?.origin !== 'returning' && !nat) {
     const churn = limits.networkFreshIdentities;
     const churnLimit = churn.perHour + churn.perMember * population;
     const churnRatio = observed.network.freshIdentities / churnLimit;
@@ -139,6 +154,17 @@ export const detectBehavior: Detector = (ctx, policy, emit) => {
     if (visitor.timing.samples >= timing.minSamples && visitor.timing.meanMs < timing.maxMeanMs && visitor.timing.cv < timing.maxCv) {
       emit('behavior.mechanical_timing', { cv: round(visitor.timing.cv, 3), meanMs: Math.round(visitor.timing.meanMs) });
     }
+    const burst = limits.burstiness;
+    if (visitor.timing.samples >= burst.minSamples && visitor.timing.cv > 0) {
+      const burstiness = 1 / (1 + visitor.timing.cv);
+      if (burstiness >= burst.minBurst && visitor.timing.meanMs < timing.maxMeanMs) {
+        emit('behavior.burstiness', { burstiness: round(burstiness, 3), cv: round(visitor.timing.cv, 3) }, { confidence: 0.4 });
+      }
+    }
+    const entropy = ctx.action?.pathEntropy;
+    if (entropy !== undefined && visitor.sessionDepth >= limits.pathEntropy.minDepth && entropy <= limits.pathEntropy.maxEntropy) {
+      emit('behavior.low_path_entropy', { entropy: round(entropy, 3), depth: visitor.sessionDepth }, { confidence: 0.45 });
+    }
     if (visitor.actionRate > limits.visitorActionsPer10m) emit('behavior.action_velocity', { rate: round(visitor.actionRate) });
     if (ctx.routeClass === 'conversion' && visitor.conversionRate > limits.visitorConversionsPerDay) {
       emit('behavior.conversion_velocity', { rate: round(visitor.conversionRate) });
@@ -161,7 +187,7 @@ export const detectBehavior: Detector = (ctx, policy, emit) => {
   if (withoutIdentity || (reliable && !pageFlowProven && visitor !== undefined && visitor.sessionDepth === 0)) {
     emit('behavior.direct_sensitive_access', { identity: ctx.identity?.origin ?? 'none' });
   }
-  if (reliable && visitor && visitor.scriptVerifiedAt === undefined) emit('behavior.script_unverified');
+  if (reliable && visitor && visitor.scriptVerifiedAt === undefined && ctx.cohort !== 'js_blocked') emit('behavior.script_unverified');
 
   if (!action) return;
   if (!action.originPresent) emit('behavior.origin_missing');
@@ -175,6 +201,9 @@ export const detectBehavior: Detector = (ctx, policy, emit) => {
   }
   if (action.repeatedMessageContacts >= limits.repeatedMessageContacts) {
     emit('behavior.repeated_message', { contacts: action.repeatedMessageContacts });
+  }
+  if (action.conversionAgeMs !== undefined && action.conversionAgeMs < limits.conversionTimingMs && ctx.paidArrival) {
+    emit('behavior.conversion_timing', { ms: action.conversionAgeMs });
   }
 };
 
@@ -209,7 +238,73 @@ export const detectTrust: Detector = (ctx, policy, emit) => {
   if (ctx.address.edgeVerified && score !== undefined && score >= 80) emit('trust.edge_likely_human', { score });
 };
 
-export const DETECTORS: readonly Detector[] = [detectNetwork, detectClient, detectPaid, detectBehavior, detectEdge, detectTrust];
+export const detectConsistency: Detector = (ctx, _policy, emit) => {
+  for (const finding of ctx.consistency ?? []) {
+    if (!(finding.code in RISK_REASONS)) continue;
+    const reason = finding.code as RiskReason;
+    if (RISK_REASONS[reason].family !== 'consistency') continue;
+    emit(reason, finding.evidence, { confidence: finding.confidence });
+  }
+  const snapshot = ctx.snapshot;
+  if (!snapshot) return;
+  if (snapshot.pointerCv !== undefined && snapshot.pointerCv < 0.06 && (ctx.observation?.visitor?.timing.samples ?? 0) >= 6) {
+    emit('behavior.pointer_mechanical', { cv: snapshot.pointerCv }, { confidence: 0.3 });
+  }
+};
+
+export const detectGraph: Detector = (ctx, policy, emit) => {
+  for (const hit of ctx.clusters ?? []) {
+    const evidence = { members: hit.members, threshold: hit.threshold, key: hit.key.slice(0, 24) };
+    switch (hit.kind) {
+      case 'behavior':
+        if (hit.members >= policy.limits.graph.behavior) emit('graph.behavior_cluster', evidence);
+        break;
+      case 'device':
+        if (hit.members >= policy.limits.graph.device) emit('graph.device_cluster', evidence, { confidence: 0.45 });
+        break;
+      case 'timing':
+        if (hit.members >= policy.limits.graph.timing) emit('graph.timing_cluster', evidence);
+        break;
+      case 'click':
+        if (hit.members >= policy.limits.graph.click) emit('graph.click_cluster', evidence);
+        break;
+      case 'campaign_asn':
+        if (hit.members >= policy.limits.graph.campaign) emit('graph.campaign_cluster', evidence);
+        break;
+      case 'lead':
+        if (hit.members >= policy.limits.graph.lead) emit('graph.lead_cluster', evidence);
+        break;
+    }
+  }
+};
+
+export const detectBaseline: Detector = (ctx, policy, emit) => {
+  for (const sample of ctx.baselines ?? []) {
+    if (!sample.spike || sample.samples < 8) continue;
+    if (sample.robustZ >= policy.limits.baseline.spikeZ) {
+      const reason = sample.key.includes(':asn:')
+        ? 'baseline.asn_dominance'
+        : sample.key.includes('identity')
+          ? 'baseline.identity_spike'
+          : sample.key.includes('conv')
+            ? 'baseline.conversion_rate_drop'
+            : 'baseline.campaign_spike';
+      emit(reason, { z: round(sample.robustZ, 2), ewma: round(sample.ewma, 2), last: round(sample.last, 2) }, { confidence: 0.6, rawValue: sample.last, normalizedValue: sample.robustZ });
+    }
+  }
+};
+
+export const DETECTORS: readonly Detector[] = [
+  detectNetwork,
+  detectClient,
+  detectPaid,
+  detectBehavior,
+  detectEdge,
+  detectTrust,
+  detectConsistency,
+  detectGraph,
+  detectBaseline,
+];
 
 function round(value: number, digits = 1): number {
   const factor = 10 ** digits;

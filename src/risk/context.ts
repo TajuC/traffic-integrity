@@ -1,7 +1,11 @@
 import type { IdentityOrigin } from '../identity/visitor.ts';
+import type { BaselineSnapshot } from '../intel/baseline.ts';
+import type { ClusterHit } from '../intel/graph.ts';
 import type { ClientAddress } from '../net/client-address.ts';
 import type { CrawlerVerdict } from '../net/crawler.ts';
 import type { NetworkProfile } from '../net/network-intel.ts';
+import type { ClientSnapshot, ConsistencyFinding, TransportFingerprint } from '../observe/consistency.ts';
+import type { VisitorCohort } from '../observe/cohort.ts';
 import type { RouteClass } from '../request/classify.ts';
 import type { UserAgentInfo } from '../request/user-agent.ts';
 import type { Observation } from '../store/types.ts';
@@ -13,6 +17,9 @@ export interface HeaderFacts {
   readonly secFetchSite: string | undefined;
   readonly secChUa: string | undefined;
   readonly secChUaPlatform: string | undefined;
+  readonly secChUaMobile: string | undefined;
+  readonly secChUaArch: string | undefined;
+  readonly secChUaBitness: string | undefined;
   readonly origin: string | undefined;
 }
 
@@ -24,6 +31,8 @@ export interface ActionFacts {
   readonly formAgeMs: number | undefined;
   readonly originPresent: boolean;
   readonly repeatedMessageContacts: number;
+  readonly conversionAgeMs?: number;
+  readonly pathEntropy?: number;
 }
 
 export interface IdentityFacts {
@@ -49,6 +58,14 @@ export interface RiskContext {
   readonly authenticated: boolean;
   readonly action: ActionFacts | undefined;
   readonly degraded: readonly string[];
+  readonly cohort?: VisitorCohort;
+  readonly snapshot?: ClientSnapshot;
+  readonly consistency?: readonly ConsistencyFinding[];
+  readonly clusters?: readonly ClusterHit[];
+  readonly baselines?: readonly BaselineSnapshot[];
+  readonly transport?: TransportFingerprint;
+  readonly campaignId?: string;
+  readonly landingPath?: string;
 }
 
 export const AUTOMATION_FLAGS = {
@@ -59,4 +76,6 @@ export const AUTOMATION_FLAGS = {
   selenium: 16,
   playwright: 32,
   zeroViewport: 64,
+  chromeRuntimeMismatch: 128,
+  cdc: 256,
 } as const;

@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { request as httpRequest, type IncomingHttpHeaders, type OutgoingHttpHeaders, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { Writable } from 'node:stream';
@@ -154,8 +155,18 @@ export interface Harness {
   close(): Promise<void>;
 }
 
+export async function emptyTestDatabase(): Promise<SqlClient> {
+  const url = process.env.TEST_DATABASE_URL;
+  if (!url) return openDatabase({ url: 'pglite://memory', ssl: 'disable', poolMax: 1 });
+  const schema = `ti_test_${randomBytes(4).toString('hex')}`;
+  const admin = await openDatabase({ url, ssl: 'disable', poolMax: 1 });
+  await admin.query(`CREATE SCHEMA ${schema}`);
+  await admin.close();
+  return openDatabase({ url, ssl: 'disable', poolMax: 2, searchPath: schema });
+}
+
 export async function sharedDatabase(): Promise<SqlClient> {
-  const db = await openDatabase({ url: 'pglite://memory', ssl: 'disable', poolMax: 1 });
+  const db = await emptyTestDatabase();
   await migrate(db);
   return db;
 }

@@ -3,28 +3,40 @@ import { after, before, describe, test } from 'node:test';
 import { apiConversions, googleAdsCsv, googleAdsExclusion } from '../src/conversion/export.ts';
 import type { ExportRow } from '../src/conversion/repository.ts';
 import { migrate, pendingMigrations } from '../src/db/migrate.ts';
-import { openDatabase, type SqlClient } from '../src/db/sql.ts';
+import type { SqlClient } from '../src/db/sql.ts';
 import { buildDataset } from '../src/net/intel-sources.ts';
 import { datasetSchema } from '../src/net/network-intel.ts';
+import { emptyTestDatabase } from './helpers/harness.ts';
 
 describe('migrations', () => {
   let db: SqlClient;
   before(async () => {
-    db = await openDatabase({ url: 'pglite://memory', ssl: 'disable', poolMax: 1 });
+    db = await emptyTestDatabase();
   });
   after(async () => {
     await db.close();
   });
 
   test('apply once, report nothing pending and are idempotent', async () => {
-    assert.deepEqual(await pendingMigrations(db), ['001_traffic_integrity.sql']);
-    assert.deepEqual(await migrate(db), ['001_traffic_integrity.sql']);
+    assert.deepEqual(await pendingMigrations(db), ['001_traffic_integrity.sql', '002_events_labels.sql']);
+    assert.deepEqual(await migrate(db), ['001_traffic_integrity.sql', '002_events_labels.sql']);
     assert.deepEqual(await migrate(db), []);
     assert.deepEqual(await pendingMigrations(db), []);
     const tables = await db.query<{ name: string }>("SELECT tablename AS name FROM pg_tables WHERE tablename LIKE 'ti_%' ORDER BY 1");
     assert.deepEqual(
       tables.rows.map((row) => row.name),
-      ['ti_conversion_attempts', 'ti_conversions', 'ti_leads', 'ti_paid_visits', 'ti_schema_migrations'],
+      [
+        'ti_assessments',
+        'ti_clusters',
+        'ti_conversion_attempts',
+        'ti_conversions',
+        'ti_edge_lists',
+        'ti_labels',
+        'ti_leads',
+        'ti_outcomes',
+        'ti_paid_visits',
+        'ti_schema_migrations',
+      ],
     );
   });
 });

@@ -8,7 +8,7 @@ Cloudflare is optional. Everything works without it, but with it the application
 | --- | --- |
 | Ships Cloudflare's published IP ranges and refreshes them with `npm run intel:refresh` | `src/net/client-address.ts`, `src/net/intel-sources.ts` |
 | Uses `CF-Connecting-IP` only when the hop that reached your infrastructure is a Cloudflare address | `ClientAddressResolver` |
-| Trusts `x-edge-asn`, `x-edge-verified-bot`, `x-edge-bot-score` and `cf-ipcountry` only when the request also carries the `x-edge-auth` secret, so another Cloudflare account pointed at your origin cannot inject them | `ClientAddressResolver` |
+| Trusts `x-edge-asn`, `x-edge-verified-bot`, `x-edge-bot-score`, `cf-ipcountry`, and optional transport fingerprints (`x-edge-ja3`, `x-edge-ja4`, `x-edge-tls-fp`, `x-edge-http2-fp`, `x-edge-alpn`, `x-edge-protocol`, `x-edge-cipher`, `x-edge-header-order`) only when the request also carries the `x-edge-auth` secret. Client-supplied copies of those headers are ignored.
 | Records requests that bypass Cloudflare (`CLOUDFLARE_MODE=monitor`) or rejects them with 403 (`enforce`) | `src/guard/inspect.ts` |
 | Treats Cloudflare verified bots as verified crawlers, and a verified bot verdict of `false` on a Googlebot or Bingbot claim as impersonation | `src/net/crawler.ts` |
 | Uses the bot score as a signal: 1 is critical, 2 to 29 is high, 80 and above earns trust | `src/risk/detectors.ts` |
@@ -27,6 +27,7 @@ Request header Transform Rules (Rules, Transform Rules, modify request header). 
 | `x-edge-asn` | dynamic | `to_string(ip.src.asnum)` |
 | `x-edge-verified-bot` | dynamic | `to_string(cf.client.bot)` |
 | `x-edge-bot-score` | dynamic | `to_string(cf.bot_management.score)`, Enterprise Bot Management only |
+| `x-edge-ja3` / `x-edge-ja4` / `x-edge-tls-fp` / `x-edge-http2-fp` / `x-edge-alpn` | dynamic, optional | Only if your plan exposes these fields. The origin ignores them unless `x-edge-auth` matches |
 
 Turn on IP Geolocation so Cloudflare sends `cf-ipcountry`.
 

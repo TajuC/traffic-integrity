@@ -6,11 +6,19 @@ A `RiskContext` holds everything known about one request: route class, header fa
 
 Detectors read the context and emit `RiskSignal`s. Each signal has a reason code, a family, a severity and points. Family and severity are fixed per reason in `src/risk/types.ts`; points and every limit live in the `RiskPolicy` in `src/risk/policy.ts`, which can be overridden by a JSON file (`RISK_POLICY_PATH`) and by threshold environment variables without touching request handlers. Unknown keys and non-increasing thresholds are rejected at startup.
 
-The engine produces a `RiskAssessment`: score from 0 to 100, decision, signals, per-family subtotals, trust credit, confidence (`full` or `reduced` when data was degraded) and the policy version.
+The engine produces a `RiskAssessment`: score from 0 to 100, decision, signals,
+per-family subtotals, trust credit, confidence (`full` or `reduced` when data was
+degraded), numeric confidence, policy version, detector version, feature schema
+version, optional model version and fraud probability, optional shadow decision,
+and cohort.
+
+Signals include source, family, severity, points, optional raw/normalized values,
+timestamp, explanation, detector version, and a confidence in 0-1. Assessments are
+reproducible from the recorded context and the same policy version.
 
 ## Scoring
 
-1. Signals are grouped by family: network, client, paid, behavior and edge. Within a family the points are sorted and combined with diminishing returns (each further signal counts half as much as the previous one), then capped. Correlated evidence about the same thing therefore cannot pile up without limit.
+1. Signals are grouped by family: network, client, paid, behavior, edge, graph, baseline and consistency. Within a family the points are sorted and combined with diminishing returns (each further signal counts half as much as the previous one), then capped. Correlated evidence about the same thing therefore cannot pile up without limit.
 2. Family subtotals are added and capped at 100.
 3. Trust signals add up to a credit capped at 35. The credit is halved when any high-severity signal is present and removed entirely when any critical signal is present, so one positive signal cannot cancel severe evidence.
 4. The score is compared with the thresholds of the route class.
@@ -24,6 +32,9 @@ The engine produces a `RiskAssessment`: score from 0 to 100, decision, signals, 
 | paid | 45 |
 | behavior | 75 |
 | edge | 60 |
+| graph | 40 |
+| baseline | 35 |
+| consistency | 40 |
 
 | Threshold | Pages and APIs | Lead submissions and sensitive actions |
 | --- | --- | --- |
@@ -86,6 +97,18 @@ Points are the defaults. The population used for scaling is the number of distin
 | `behavior.repeated_message` | medium | 20 | The same message text came from 3 or more contacts in 24 hours |
 | `edge.bot_score_automated` | critical | 55 | Cloudflare Bot Management score of 1 |
 | `edge.bot_score_likely` | high | 35 | Score from 2 to 29 |
+| `client.impossible_combination` | high | 32 | Claimed platform and observed JS/UA facts cannot both be true |
+| `client.platform_os_mismatch` | medium | 18 | Client hint platform contradicts the User-Agent OS |
+| `client.mobile_touch_mismatch` | medium | 16 | Mobile claim without touch support |
+| `client.feature_family_mismatch` | high | 30 | Safari/Firefox claim with Chromium-only APIs |
+| `client.hardware_inconsistency` | low | 10 | Implausible cores, memory, viewport, or DPR |
+| `graph.behavior_cluster` | high | 28 | Many identities share one behavioral signature |
+| `graph.timing_cluster` | high | 24 | Many identities share one timing profile |
+| `graph.click_cluster` | high | 30 | One click identifier clusters across more identities than link sharing explains |
+| `graph.lead_cluster` | high | 32 | Normalized lead content repeats across identities |
+| `baseline.campaign_spike` | high | 26 | Campaign paid volume exceeds its robust (MAD) baseline |
+| `baseline.conversion_rate_drop` | medium | 16 | Conversion rate dropped while paid clicks rose |
+| `baseline.asn_dominance` | medium | 14 | One ASN suddenly dominates a previously mixed campaign |
 
 | Trust signal | Credit | Fires when |
 | --- | --- | --- |

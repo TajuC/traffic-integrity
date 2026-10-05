@@ -8,9 +8,12 @@ import { openDatabase, type SqlClient } from './db/sql.ts';
 import { RestrictionCache } from './guard/restrictions.ts';
 import { cookieNames, type CookieNames } from './identity/cookies.ts';
 import { IdentityService } from './identity/visitor.ts';
+import { Intelligence } from './intel/engine.ts';
+import { ModelRuntime } from './model/runtime.ts';
 import { ClientAddressResolver } from './net/client-address.ts';
 import { CrawlerVerifier, type DnsResolver } from './net/crawler.ts';
 import { NetworkIntel } from './net/network-intel.ts';
+import { SnapshotCache } from './observe/snapshots.ts';
 import type { RouteRules } from './request/classify.ts';
 import type { RiskPolicy } from './risk/policy.ts';
 import { MemoryStore } from './store/memory-store.ts';
@@ -21,6 +24,7 @@ import { SecurityEvents } from './telemetry/events.ts';
 import { createLogger } from './telemetry/logger.ts';
 import { IntegrityMetrics } from './telemetry/metrics.ts';
 import { PaidVisitRecorder } from './telemetry/paid-visits.ts';
+import { EventRecorder } from './events/recorder.ts';
 
 export interface Runtime {
   readonly config: Config;
@@ -40,7 +44,12 @@ export interface Runtime {
   readonly turnstile: TurnstileVerifier | undefined;
   readonly db: SqlClient | undefined;
   readonly paidVisits: PaidVisitRecorder;
+  readonly eventsLog: EventRecorder;
   readonly restrictions: RestrictionCache;
+  readonly intelligence: Intelligence;
+  readonly snapshots: SnapshotCache;
+  readonly model: ModelRuntime;
+  readonly shadowPolicy: RiskPolicy | undefined;
   readonly routes: RouteRules;
   readonly clock: () => number;
   close(): Promise<void>;
@@ -148,10 +157,23 @@ export async function createRuntime(config: Config, overrides: RuntimeOverrides 
       if (result !== 'written') degraded('paid_visits', error ?? result);
     },
   });
+  const eventsLog = new EventRecorder(db);
+  const intelligence = new Intelligence();
+  const snapshots = new SnapshotCache();
+  let model = new ModelRuntime();
+  if (config.modelPath) {
+    try {
+      model = ModelRuntime.fromFile(config.modelPath);
+    } catch (error) {
+      degraded('model', error, 'load');
+    }
+  }
+  const shadowPolicy = config.shadowPolicy;
 
   const timers: NodeJS.Timeout[] = [];
   if (overrides.background !== false) {
     paidVisits.start();
+    eventsLog.start();
     timers.push(setInterval(() => fallback.sweep(clock()), MEMORY_SWEEP_MS));
     timers.push(
       setInterval(() => {
@@ -186,7 +208,12 @@ export async function createRuntime(config: Config, overrides: RuntimeOverrides 
     turnstile,
     db,
     paidVisits,
+    eventsLog,
     restrictions: new RestrictionCache(),
+    intelligence,
+    snapshots,
+    model,
+    shadowPolicy,
     routes: {
       internalPrefix: config.routes.internalPrefix,
       conversionPath: config.conversion.path,
@@ -198,6 +225,7 @@ export async function createRuntime(config: Config, overrides: RuntimeOverrides 
     async close(): Promise<void> {
       for (const timer of timers) clearInterval(timer);
       await paidVisits.stop();
+      await eventsLog.stop();
       await store.close();
       await db?.close();
     },

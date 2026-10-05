@@ -35,7 +35,9 @@ Networks: Search campaigns can include Google search partners and the Display Ne
 
 1. Add the "Invalid clicks" column to the campaigns table. These are clicks Google already filtered and did not charge.
 2. Clicks found invalid after billing are credited on later invoices. Report editor, Template gallery, "Invalid activity credit report: Search and Performance Max" shows credited clicks and amounts.
-3. If you believe abuse was not filtered, submit the Click Quality Form for the affected period, within the last 60 days. Include your 10-digit customer id, exact dates and campaigns, and the evidence this system collects: `/_ti/admin/exclusions.json`, the `paid_visit` and `temporary_restriction` events, and the GCLIDs from `ti_paid_visits` with their risk reasons.
+3. If you believe abuse was not filtered, submit the Click Quality Form for the affected period, within the last 60 days. Include your 10-digit customer id, exact dates and campaigns, and the evidence this system collects: `/_ti/admin/exclusions.json`, `/_ti/admin/campaigns.json`, `/_ti/admin/sessions.json`, `/_ti/admin/evidence/<uuid>.json`, the `paid_visit` and `temporary_restriction` events, and hashed click identifiers rather than raw `gclid` values in exported bundles. Evidence bundles state that they do not prove Google billed a click and cannot reverse a charge.
+
+Campaign pause or throttle recommendations from `/_ti/admin/campaigns.json` are never applied automatically. `GOOGLE_ADS_APPLY_CHANGES` stays false unless an operator has authorized a control-plane integration. Spend-at-risk figures are estimates from `GOOGLE_ADS_CPC_USD` times suspicious visit counts.
 
 ## IP exclusions
 

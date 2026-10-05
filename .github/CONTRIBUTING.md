@@ -13,9 +13,9 @@ npm install
 npm run check
 ```
 
-`npm run check` is typecheck, lint, the test suite, and a production build.
+`npm run check` is typecheck, lint, the test suite, the synthetic evaluation CLI, and a production build.
 Without `TEST_REDIS_URL` the Redis contract tests and the multi-instance suite
-are skipped. To include them:
+are skipped. Without `TEST_DATABASE_URL` database tests use PGlite. To include them:
 
 ```
 docker run -d --name ti-redis -p 6379:6379 redis:7.4-alpine
@@ -23,7 +23,7 @@ TEST_REDIS_URL=redis://127.0.0.1:6379/0 npm test
 ```
 
 PostgreSQL is not required for the suite. Tests that need a database use
-PGlite, an in-process PostgreSQL engine.
+PGlite unless `TEST_DATABASE_URL` points at a real server.
 
 ## Quality bar
 

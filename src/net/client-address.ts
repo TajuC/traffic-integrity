@@ -11,6 +11,14 @@ export const EDGE_HEADERS = {
   verifiedBot: 'x-edge-verified-bot',
   country: 'cf-ipcountry',
   connectingIp: 'cf-connecting-ip',
+  tls: 'x-edge-tls-fp',
+  ja3: 'x-edge-ja3',
+  ja4: 'x-edge-ja4',
+  http2: 'x-edge-http2-fp',
+  headerOrder: 'x-edge-header-order',
+  protocol: 'x-edge-protocol',
+  alpn: 'x-edge-alpn',
+  cipher: 'x-edge-cipher',
 } as const;
 
 export const CLOUDFLARE_RANGES: readonly string[] = [
@@ -50,6 +58,14 @@ export interface EdgeSignals {
   readonly country?: string;
   readonly botScore?: number;
   readonly verifiedBot?: boolean;
+  readonly tls?: string;
+  readonly ja3?: string;
+  readonly ja4?: string;
+  readonly http2?: string;
+  readonly headerOrder?: string;
+  readonly protocol?: string;
+  readonly alpn?: string;
+  readonly cipher?: string;
 }
 
 export interface ClientAddress {
@@ -150,16 +166,38 @@ function single(value: string | string[] | undefined): string | undefined {
 }
 
 function readEdgeSignals(headers: IncomingHttpHeaders): EdgeSignals {
-  const signals: { asn?: number; country?: string; botScore?: number; verifiedBot?: boolean } = {};
+  const signals: EdgeSignals = {};
   const asn = integer(single(headers[EDGE_HEADERS.asn]), 1, 4_294_967_295);
-  if (asn !== undefined) signals.asn = asn;
+  if (asn !== undefined) (signals as { asn?: number }).asn = asn;
   const country = single(headers[EDGE_HEADERS.country])?.trim().toUpperCase();
-  if (country && /^[A-Z][A-Z0-9]$/.test(country)) signals.country = country;
+  if (country && /^[A-Z][A-Z0-9]$/.test(country)) (signals as { country?: string }).country = country;
   const score = integer(single(headers[EDGE_HEADERS.botScore]), 1, 99);
-  if (score !== undefined) signals.botScore = score;
+  if (score !== undefined) (signals as { botScore?: number }).botScore = score;
   const verified = single(headers[EDGE_HEADERS.verifiedBot])?.trim().toLowerCase();
-  if (verified === 'true' || verified === 'false') signals.verifiedBot = verified === 'true';
-  return signals;
+  if (verified === 'true' || verified === 'false') (signals as { verifiedBot?: boolean }).verifiedBot = verified === 'true';
+  const token = (header: string, max = 128): string | undefined => {
+    const value = single(headers[header])?.trim();
+    return value && value.length <= max && /^[A-Za-z0-9._:/-]+$/.test(value) ? value : undefined;
+  };
+  const tls = token(EDGE_HEADERS.tls);
+  const ja3 = token(EDGE_HEADERS.ja3, 64);
+  const ja4 = token(EDGE_HEADERS.ja4, 64);
+  const http2 = token(EDGE_HEADERS.http2, 64);
+  const headerOrder = token(EDGE_HEADERS.headerOrder, 128);
+  const protocol = token(EDGE_HEADERS.protocol, 16);
+  const alpn = token(EDGE_HEADERS.alpn, 16);
+  const cipher = token(EDGE_HEADERS.cipher, 64);
+  return {
+    ...signals,
+    ...(tls ? { tls } : {}),
+    ...(ja3 ? { ja3 } : {}),
+    ...(ja4 ? { ja4 } : {}),
+    ...(http2 ? { http2 } : {}),
+    ...(headerOrder ? { headerOrder } : {}),
+    ...(protocol ? { protocol } : {}),
+    ...(alpn ? { alpn } : {}),
+    ...(cipher ? { cipher } : {}),
+  };
 }
 
 function integer(value: string | undefined, min: number, max: number): number | undefined {
