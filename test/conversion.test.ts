@@ -322,6 +322,19 @@ describe('conversion integrity', () => {
       assert.ok(summary.campaigns.some((row) => row.campaign === '777' && row.suspicious >= 8));
       const exclusions = (await harness.raw('GET', '/_ti/admin/exclusions.json?minScore=30', admin)).json<{ candidates: Array<{ target: string; googleAds: string }> }>();
       assert.ok(exclusions.candidates.some((row) => row.target === '198.51.100.250' && row.googleAds === '198.51.100.250'));
+      const sessions = (
+        await harness.raw('GET', '/_ti/admin/sessions.json?hours=24&minScore=0&paid=true', admin)
+      ).json<{ sessions: Array<{ id: string; campaign_id: string | null }> }>();
+      const row = sessions.sessions.find((item) => item.campaign_id === '777');
+      assert.ok(row);
+      const bundle = (await harness.raw('GET', `/_ti/admin/evidence/${row.id}.json`, admin)).json<{
+        limitation: string;
+        campaign?: string;
+        clickHash?: string;
+      }>();
+      assert.match(bundle.limitation, /cannot reverse a Google Ads charge/);
+      assert.equal(bundle.campaign, '777');
+      assert.equal(bundle.clickHash, undefined);
     }));
 });
 

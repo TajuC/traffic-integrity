@@ -16,6 +16,7 @@ export interface DatabaseOptions {
   readonly url: string;
   readonly ssl: 'disable' | 'require' | 'verify-full';
   readonly poolMax: number;
+  readonly searchPath?: string;
   readonly onError?: (error: Error) => void;
 }
 
@@ -30,6 +31,7 @@ export function isUniqueViolation(error: unknown, constraint?: string): boolean 
 }
 
 function openPostgres(options: DatabaseOptions): SqlClient {
+  const searchPath = options.searchPath && /^[A-Za-z_][A-Za-z0-9_]*$/.test(options.searchPath) ? options.searchPath : undefined;
   const pool = new pg.Pool({
     connectionString: options.url,
     max: options.poolMax,
@@ -37,6 +39,7 @@ function openPostgres(options: DatabaseOptions): SqlClient {
     connectionTimeoutMillis: 3000,
     idleTimeoutMillis: 30_000,
     statement_timeout: 10_000,
+    ...(searchPath ? { options: `-c search_path=${searchPath}` } : {}),
   });
   pool.on('error', (error) => options.onError?.(error));
 

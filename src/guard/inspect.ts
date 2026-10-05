@@ -1,8 +1,14 @@
 import type { IncomingHttpHeaders } from 'node:http';
 import { parseAttribution, type PaidAttribution } from '../attribution/attribution.ts';
+import { hourOfDay } from '../intel/stats.ts';
 import { readCookies, type CookieSpec } from '../identity/cookies.ts';
 import type { VisitorIdentity } from '../identity/visitor.ts';
+import { extractFeatures } from '../model/features.ts';
 import { addressBucket, networkBucket } from '../net/ip.ts';
+import { detectCohort } from '../observe/cohort.ts';
+import { behaviorFeatures } from '../observe/behavior.ts';
+import { analyzeConsistency, parseClientHints } from '../observe/consistency.ts';
+import { behaviorSignature, deviceSignature, timingSignature } from '../observe/signatures.ts';
 import { classifyRequest, type RequestShape } from '../request/classify.ts';
 import { parseUserAgent } from '../request/user-agent.ts';
 import type { HeaderFacts, RiskContext } from '../risk/context.ts';
@@ -139,6 +145,61 @@ export async function inspectRequest(runtime: Runtime, input: InspectInput): Pro
     runtime.clearance.isValid(clearanceToken, identity.visitorId, nowSeconds) &&
     (observation?.source !== 'redis' || (observation.visitor?.clearanceUntil ?? 0) >= now);
 
+  const hints = parseClientHints({
+    secChUa: single(input.headers['sec-ch-ua']),
+    secChUaPlatform: single(input.headers['sec-ch-ua-platform']),
+    secChUaMobile: single(input.headers['sec-ch-ua-mobile']),
+    secChUaArch: single(input.headers['sec-ch-ua-arch']),
+    secChUaBitness: single(input.headers['sec-ch-ua-bitness']),
+  });
+  const transport = address.edgeVerified
+    ? {
+        tls: address.edge.tls,
+        ja3: address.edge.ja3,
+        ja4: address.edge.ja4,
+        http2: address.edge.http2,
+        headerOrder: address.edge.headerOrder,
+        protocol: address.edge.protocol,
+        alpn: address.edge.alpn,
+        cipher: address.edge.cipher,
+      }
+    : undefined;
+  const snapshot = runtime.snapshots.get(identity?.visitorId, now);
+  const consistency = analyzeConsistency({
+    ua,
+    hints,
+    ...(snapshot ? { snapshot } : {}),
+    headerLanguage: single(input.headers['accept-language']),
+    ...(transport ? { transport } : {}),
+    secure: config.origin.secure,
+  });
+  const features = behaviorFeatures(observation, {
+    pointerCv: snapshot?.pointerCv,
+    keyCv: snapshot?.keyCv,
+    scrollCv: snapshot?.scrollCv,
+    dwellMs: snapshot?.dwellMs,
+  });
+  const campaignId = attribution?.gadCampaignId ?? attribution?.utm.utm_campaign;
+  const intel = runtime.intelligence.observe(
+    {
+      now,
+      visitorId: identity?.visitorId,
+      addressKey: subject.addressKey,
+      networkKey: subject.networkKey,
+      asn: network.asn,
+      clickHash: attribution && identity ? keyring.digest('subject', `c:${attribution.primary?.value ?? `${identity.visitorId}:${identity.sessionId}`}`) : undefined,
+      campaign: campaignId,
+      landing: input.path.slice(0, 128),
+      behaviorSig: behaviorSignature(features),
+      deviceSig: snapshot ? deviceSignature(snapshot, ua.family, ua.os, ua.major) : undefined,
+      timingSig: timingSignature(features),
+    },
+    {
+      campaignClicks: observation?.network.paidClicks5m,
+      hour: hourOfDay(now),
+    },
+  );
+
   const context: RiskContext = {
     now,
     routeClass: shape.routeClass,
@@ -157,8 +218,26 @@ export async function inspectRequest(runtime: Runtime, input: InspectInput): Pro
     authenticated: input.authenticated,
     action: undefined,
     degraded,
+    snapshot,
+    consistency,
+    clusters: intel.clusters,
+    baselines: intel.baselines,
+    ...(transport ? { transport } : {}),
+    campaignId,
+    landingPath: input.path.slice(0, 512),
+    cohort: undefined,
   };
-  const assessment = assessRisk(context, policy);
+  const scoredContext = { ...context, cohort: detectCohort(context) };
+  const heuristic = assessRisk(scoredContext, policy);
+  const vector = extractFeatures(scoredContext, heuristic);
+  const modelScore = runtime.model.score(vector);
+  const shadowDecision = runtime.shadowPolicy ? assessRisk(scoredContext, runtime.shadowPolicy).decision : undefined;
+  const assessment: RiskAssessment = {
+    ...heuristic,
+    modelVersion: modelScore?.version,
+    fraudProbability: modelScore?.probability,
+    shadowDecision,
+  };
 
   const restrictedUntil = crawler.status === 'verified' ? undefined : (cachedRestriction ?? activeRestriction(observation, now, policy));
   if (restrictedUntil !== undefined && cachedRestriction === undefined) {
@@ -166,7 +245,7 @@ export async function inspectRequest(runtime: Runtime, input: InspectInput): Pro
     else runtime.restrictions.set(subject.addressKey, restrictedUntil);
   }
 
-  const integrity: RequestIntegrity = { requestId: assessment.id, now, shape, context, identity, subject, attribution, assessment, restrictedUntil };
+  const integrity: RequestIntegrity = { requestId: assessment.id, now, shape, context: scoredContext, identity, subject, attribution, assessment, restrictedUntil };
   record(runtime, integrity, input, performance.now() - started, cachedRestriction !== undefined);
   return { integrity, cookies, originBypass: false };
 }
@@ -211,6 +290,33 @@ function record(runtime: Runtime, integrity: RequestIntegrity, input: InspectInp
   metrics.assessments.inc({ route: shape.routeClass, decision: alreadyRestricted ? 'RESTRICTED' : assessment.decision, enforced });
   metrics.assessmentSeconds.observe({ route: shape.routeClass }, elapsedMs / 1000);
   if (!alreadyRestricted) for (const signal of assessment.signals) metrics.signals.inc({ reason: signal.reason });
+  if (enforced === 'no' && (assessment.decision === 'BLOCK' || assessment.decision === 'CHALLENGE' || assessment.decision === 'TEMPORARILY_RESTRICT')) {
+    metrics.shadowDecisions.inc({ would: assessment.decision === 'BLOCK' ? 'block' : assessment.decision === 'CHALLENGE' ? 'challenge' : 'restrict' });
+  }
+  for (const hit of context.clusters ?? []) metrics.clusters.inc({ kind: hit.kind });
+  if (assessment.fraudProbability !== undefined) metrics.modelScores.observe({ version: assessment.modelVersion ?? 'none' }, assessment.fraudProbability);
+  runtime.eventsLog.record({
+    id: assessment.id,
+    createdAt: new Date(integrity.now),
+    visitorId: integrity.identity?.visitorId,
+    sessionId: integrity.identity?.sessionId,
+    ipHash: integrity.subject.addressKey,
+    networkPrefix: integrity.subject.networkPrefix,
+    asn: context.network.asn,
+    campaignId: integrity.attribution?.gadCampaignId ?? integrity.attribution?.utm.utm_campaign,
+    route: shape.routeClass,
+    paid: context.paidArrival,
+    score: assessment.score,
+    decision: alreadyRestricted ? 'TEMPORARILY_RESTRICT' : assessment.decision,
+    shadowDecision: assessment.shadowDecision,
+    reasons: assessment.signals.filter((signal) => signal.family !== 'trust').map((signal) => signal.reason),
+    cohort: assessment.cohort,
+    policyVersion: assessment.policyVersion,
+    detectorVersion: assessment.detectorVersion,
+    modelVersion: assessment.modelVersion,
+    fraudProbability: assessment.fraudProbability,
+    clusterKind: context.clusters?.[0]?.kind,
+  });
 
   const summary = {
     ...correlation(integrity),
@@ -339,6 +445,9 @@ function headerFacts(headers: IncomingHttpHeaders): HeaderFacts {
     secFetchSite: single(headers['sec-fetch-site']),
     secChUa: single(headers['sec-ch-ua']),
     secChUaPlatform: single(headers['sec-ch-ua-platform']),
+    secChUaMobile: single(headers['sec-ch-ua-mobile']),
+    secChUaArch: single(headers['sec-ch-ua-arch']),
+    secChUaBitness: single(headers['sec-ch-ua-bitness']),
     origin: single(headers.origin),
   };
 }

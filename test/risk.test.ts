@@ -176,7 +176,7 @@ describe('risk engine scenarios', () => {
       riskContext({
         routeClass: 'conversion',
         ua: parseUserAgent('python-requests/2.32.3'),
-        headers: { accept: '*/*', acceptLanguage: undefined, secFetchMode: undefined, secFetchSite: undefined, secChUa: undefined, secChUaPlatform: undefined, origin: undefined },
+        headers: { accept: '*/*', acceptLanguage: undefined, secFetchMode: undefined, secFetchSite: undefined, secChUa: undefined, secChUaPlatform: undefined, secChUaMobile: undefined, secChUaArch: undefined, secChUaBitness: undefined, origin: undefined },
         observation: observation({ visitor: { sessionDepth: 0 } }),
         action: { honeypot: false, formToken: 'missing', formAgeMs: undefined, originPresent: false, repeatedMessageContacts: 0 },
       }),

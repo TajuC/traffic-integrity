@@ -30,8 +30,12 @@ async function run(label: string, primary: RedisStore | null): Promise<void> {
     if (i >= 1000) samples.push(performance.now() - started);
   }
   samples.sort((a, b) => a - b);
-  const at = (q: number) => samples[Math.floor(q * (samples.length - 1))]!.toFixed(3);
-  process.stdout.write(`${label}: p50 ${at(0.5)} ms, p95 ${at(0.95)} ms, p99 ${at(0.99)} ms over ${samples.length} requests\n`);
+  const at = (q: number) => samples[Math.min(samples.length - 1, Math.floor(q * (samples.length - 1)))]!.toFixed(3);
+  const totalMs = samples.reduce((sum, value) => sum + value, 0);
+  const rps = ((samples.length / totalMs) * 1000).toFixed(0);
+  process.stdout.write(
+    `${label}: p50 ${at(0.5)} ms, p95 ${at(0.95)} ms, p99 ${at(0.99)} ms, p99.9 ${at(0.999)} ms, ~${rps} req/s over ${samples.length} requests\n`,
+  );
   await runtime.close();
 }
 

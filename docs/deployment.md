@@ -35,7 +35,9 @@ Required means the application refuses to start without it in production. Values
 | `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY` | recommended, set together | none | Turnstile widget keys; testing keys are refused in production |
 | `TURNSTILE_TIMEOUT_MS` | no | `2500` | Per attempt; one retry with the same idempotency key |
 | `TURNSTILE_MAX_AGE_SECONDS` | no | `300` | Oldest acceptable challenge |
-| `ENFORCEMENT_MODE` | no | `monitor` | `enforce` after the tuning period |
+| `ENFORCEMENT_MODE` | no | `monitor` | `shadow` and `monitor` log without enforcing. Switch to `enforce` after tuning |
+| `SHADOW_POLICY_PATH` | no | none | Second policy scored on every request and stored, never enforced |
+| `MODEL_PATH` | no | none | Optional logistic model JSON. Request path works without it |
 | `RISK_POLICY_PATH` | no | none | JSON file overriding any part of the policy |
 | `RISK_MONITOR_THRESHOLD`, `RISK_CHALLENGE_THRESHOLD`, `RISK_RESTRICT_THRESHOLD`, `RISK_BLOCK_THRESHOLD` | no | 20, 45, 70, 90 | Page and API thresholds |
 | `NETWORK_INTEL_PATH` | no | `data/network-intel.json` | Output of `npm run intel:refresh`, reloaded every ten minutes |
@@ -60,7 +62,9 @@ Required means the application refuses to start without it in production. Values
 | `ADMIN_TOKEN` | for admin APIs | none | Bearer token for metrics, summaries, exclusions and qualification |
 | `LOG_LEVEL` | no | `info` | pino level |
 | `ASSESSMENT_LOG_SAMPLE_RATE` | no | `0.02` | Share of allowed requests logged |
-| `PAID_VISIT_RETENTION_DAYS`, `ATTEMPT_RETENTION_DAYS`, `LEAD_RETENTION_DAYS` | no | 90, 30, 365 | Retention enforced by the hourly maintenance job |
+| `PAID_VISIT_RETENTION_DAYS`, `ATTEMPT_RETENTION_DAYS`, `LEAD_RETENTION_DAYS`, `ASSESSMENT_RETENTION_DAYS` | no | 90, 30, 365, 45 | Retention enforced by the hourly maintenance job |
+| `GOOGLE_ADS_CPC_USD` | no | none | Optional average CPC for spend-at-risk estimates only |
+| `GOOGLE_ADS_APPLY_CHANGES` | no | `false` | Must stay false unless an operator has authorized Ads API writes |
 
 ## Reverse proxy
 
@@ -82,7 +86,7 @@ With `TRUSTED_PROXIES=loopback` this is complete. Behind a cloud load balancer, 
 1. Provision PostgreSQL and Redis in the same region as the application. Restrict both to the application network.
 2. Generate secrets: `INTEGRITY_SECRET` (`openssl rand -base64 48`), `ADMIN_TOKEN`, `EXPORT_PASSWORD` and `CLOUDFLARE_EDGE_SECRET`. Store them in the platform secret store, never in the repository.
 3. Create the Turnstile widget for your hostnames and copy its keys.
-4. Set the environment variables with `ENFORCEMENT_MODE=monitor` and `CLOUDFLARE_MODE=monitor` if Cloudflare is used.
+4. Set the environment variables with `ENFORCEMENT_MODE=shadow` or `monitor` and `CLOUDFLARE_MODE=monitor` if Cloudflare is used. Apply both SQL migrations (`001` and `002`).
 5. `npm ci`, `npm run check`, then `npm run migrate` against the production database.
 6. Run `npm run intel:refresh -- --with-private-relay` once and schedule it daily. Place the output at `NETWORK_INTEL_PATH` on every instance or on shared storage.
 7. Deploy the application and confirm `/readyz` reports `database: ok` and `sharedStore: ok`.

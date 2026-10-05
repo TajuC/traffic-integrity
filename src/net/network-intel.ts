@@ -1,12 +1,13 @@
 import { readFile, stat } from 'node:fs/promises';
 import type { AsnResponse } from 'maxmind';
 import { z } from 'zod';
+import { classifyFromOrg, type NetworkCategory } from './providers.ts';
 import type { ClientAddress } from './client-address.ts';
 import { HOSTING_ASNS } from './hosting-asns.ts';
 import type { ParsedIp } from './ip.ts';
 import { IpRangeTable } from './range-table.ts';
 
-export type NetworkCategory = 'hosting' | 'privacy_relay' | 'tor' | 'unclassified';
+export type { NetworkCategory } from './providers.ts';
 
 export const CRAWLER_RANGE_KINDS = ['google-common', 'google-special', 'google-fetcher', 'google-agent', 'bing'] as const;
 export type CrawlerRangeKind = (typeof CRAWLER_RANGE_KINDS)[number];
@@ -18,6 +19,7 @@ export interface NetworkProfile {
   readonly category: NetworkCategory;
   readonly provider: string | undefined;
   readonly asnSource: 'edge' | 'database' | 'none';
+  readonly confidence?: number;
 }
 
 export const datasetSchema = z.object({
@@ -125,16 +127,29 @@ export class NetworkIntel {
     const ip = address.ip;
     let category: NetworkCategory = 'unclassified';
     let provider: string | undefined;
+    let confidence = 0.25;
     const relay = this.tables.relays.lookup(ip);
     const hosting = this.tables.hosting.lookup(ip) ?? (asn === undefined ? undefined : HOSTING_ASNS.get(asn));
+    const orgType = classifyFromOrg(asOrg);
     if (country === 'T1' || this.tables.tor.has(ip)) {
       category = 'tor';
+      confidence = 0.9;
     } else if (relay) {
       category = 'privacy_relay';
       provider = relay;
+      confidence = 0.85;
+    } else if (orgType === 'vpn') {
+      category = 'vpn';
+      provider = asOrg;
+      confidence = 0.55;
     } else if (hosting) {
       category = 'hosting';
       provider = hosting;
+      confidence = 0.8;
+    } else if (orgType) {
+      category = orgType;
+      provider = asOrg;
+      confidence = 0.45;
     }
 
     return {
@@ -144,6 +159,7 @@ export class NetworkIntel {
       category,
       provider,
       asnSource,
+      confidence,
     };
   }
 }

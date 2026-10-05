@@ -1,8 +1,18 @@
 import { randomUUID } from 'node:crypto';
+import { detectCohort } from '../observe/cohort.ts';
+import { FEATURE_SCHEMA_VERSION, DETECTOR_VERSION } from './versions.ts';
 import type { RiskContext } from './context.ts';
 import { DETECTORS, type Emit } from './detectors.ts';
 import type { RiskPolicy, ScoredFamily, Thresholds } from './policy.ts';
-import { RISK_REASONS, severityRank, type RiskAssessment, type RiskDecision, type RiskFamily, type RiskSignal } from './types.ts';
+import {
+  RISK_REASONS,
+  defaultConfidence,
+  severityRank,
+  type RiskAssessment,
+  type RiskDecision,
+  type RiskFamily,
+  type RiskSignal,
+} from './types.ts';
 
 export interface ScoreBreakdown {
   readonly score: number;
@@ -13,13 +23,34 @@ export interface ScoreBreakdown {
 
 const CRAWLER_SAFE_ROUTES = new Set(['page', 'api', 'internal', 'asset', 'bypass']);
 
-export function assessRisk(ctx: RiskContext, policy: RiskPolicy, id: string = randomUUID()): RiskAssessment {
+export interface AssessOptions {
+  readonly id?: string;
+  readonly modelVersion?: string;
+  readonly fraudProbability?: number;
+  readonly shadowDecision?: RiskDecision;
+}
+
+export function assessRisk(ctx: RiskContext, policy: RiskPolicy, idOrOptions: string | AssessOptions = {}): RiskAssessment {
+  const options: AssessOptions = typeof idOrOptions === 'string' ? { id: idOrOptions } : idOrOptions;
   const signals: RiskSignal[] = [];
-  const emit: Emit = (reason, evidence) => {
+  const emit: Emit = (reason, evidence, extras) => {
     const points = policy.points[reason];
     if (points <= 0) return;
     const meta = RISK_REASONS[reason];
-    signals.push(evidence ? { reason, family: meta.family, severity: meta.severity, points, evidence } : { reason, family: meta.family, severity: meta.severity, points });
+    signals.push({
+      reason,
+      family: meta.family,
+      severity: meta.severity,
+      points,
+      ...(evidence ? { evidence } : {}),
+      source: meta.source,
+      confidence: extras?.confidence ?? defaultConfidence(meta.severity),
+      ...(extras?.rawValue !== undefined ? { rawValue: extras.rawValue } : {}),
+      ...(extras?.normalizedValue !== undefined ? { normalizedValue: extras.normalizedValue } : {}),
+      timestamp: ctx.now,
+      explanation: meta.explanation,
+      detectorVersion: DETECTOR_VERSION,
+    });
   };
   for (const detect of DETECTORS) detect(ctx, policy, emit);
 
@@ -30,16 +61,29 @@ export function assessRisk(ctx: RiskContext, policy: RiskPolicy, id: string = ra
   if (ctx.crawler.status === 'verified' && CRAWLER_SAFE_ROUTES.has(ctx.routeClass)) decision = 'ALLOW';
   else if (ctx.clearanceValid && decision === 'CHALLENGE') decision = 'ALLOW_AND_MONITOR';
 
+  const cohort = ctx.cohort ?? detectCohort(ctx);
+  const independent = new Set(signals.filter((signal) => signal.family !== 'trust').map((signal) => signal.family)).size;
+  const meanConfidence =
+    signals.length === 0 ? 1 : signals.reduce((sum, signal) => sum + (signal.confidence ?? defaultConfidence(signal.severity)), 0) / signals.length;
+  const numericConfidence = ctx.degraded.length > 0 ? Math.min(0.7, meanConfidence) : Math.min(1, 0.35 + 0.2 * independent) * meanConfidence;
+
   return {
-    id,
+    id: options.id ?? randomUUID(),
     score: scored.score,
     decision,
     signals,
     families: scored.families,
     trustCredit: scored.trustCredit,
     confidence: ctx.degraded.length > 0 ? 'reduced' : 'full',
+    numericConfidence: Math.round(numericConfidence * 1000) / 1000,
     degraded: ctx.degraded,
     policyVersion: policy.version,
+    detectorVersion: DETECTOR_VERSION,
+    featureSchemaVersion: FEATURE_SCHEMA_VERSION,
+    modelVersion: options.modelVersion,
+    fraudProbability: options.fraudProbability,
+    shadowDecision: options.shadowDecision,
+    cohort,
   };
 }
 
@@ -101,4 +145,12 @@ export function scoreSignals(signals: readonly RiskSignal[], policy: RiskPolicy,
   if (decision === 'CHALLENGE' && highest < 2 && riskSignals < 2) decision = 'ALLOW_AND_MONITOR';
 
   return { score, decision, families, trustCredit };
+}
+
+export function decideFromScore(score: number, thresholds: Thresholds): RiskDecision {
+  if (score >= thresholds.block) return 'BLOCK';
+  if (score >= thresholds.restrict) return 'TEMPORARILY_RESTRICT';
+  if (score >= thresholds.challenge) return 'CHALLENGE';
+  if (score >= thresholds.monitor) return 'ALLOW_AND_MONITOR';
+  return 'ALLOW';
 }

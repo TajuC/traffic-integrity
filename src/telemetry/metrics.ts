@@ -11,6 +11,12 @@ export class IntegrityMetrics {
   readonly paidVisitWrites: Counter<'result'>;
   readonly assessmentSeconds: Histogram<'route'>;
   readonly turnstileSeconds: Histogram<'outcome'>;
+  readonly shadowDecisions: Counter<'would'>;
+  readonly clusters: Counter<'kind'>;
+  readonly modelScores: Histogram<'version'>;
+  readonly edgeListProposals: Counter<'action'>;
+  readonly labels: Counter<'label'>;
+  readonly degraded: Counter<'component'>;
 
   constructor() {
     const registers = [this.registry];
@@ -60,5 +66,27 @@ export class IntegrityMetrics {
       buckets: [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5],
       registers,
     });
+    this.shadowDecisions = new Counter({
+      name: 'ti_shadow_decisions_total',
+      help: 'Shadow or monitor-mode decisions that would have been enforced',
+      labelNames: ['would'],
+      registers,
+    });
+    this.clusters = new Counter({ name: 'ti_clusters_total', help: 'Observed attack-cluster hits by kind', labelNames: ['kind'], registers });
+    this.modelScores = new Histogram({
+      name: 'ti_model_score',
+      help: 'Optional model fraud probability',
+      labelNames: ['version'],
+      buckets: [0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95],
+      registers,
+    });
+    this.edgeListProposals = new Counter({
+      name: 'ti_edge_list_proposals_total',
+      help: 'Short-lived upstream block or challenge list proposals',
+      labelNames: ['action'],
+      registers,
+    });
+    this.labels = new Counter({ name: 'ti_labels_total', help: 'Operator or CRM labels recorded', labelNames: ['label'], registers });
+    this.degraded = new Counter({ name: 'ti_degraded_total', help: 'Subsystem degradation events', labelNames: ['component'], registers });
   }
 }

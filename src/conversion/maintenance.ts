@@ -1,3 +1,4 @@
+import { purgeAssessments } from '../events/recorder.ts';
 import type { SqlClient } from '../db/sql.ts';
 import type { Runtime } from '../runtime.ts';
 import { deliverLead, MAX_DELIVERY_ATTEMPTS, type LeadHook } from './pipeline.ts';
@@ -63,6 +64,7 @@ export class Maintenance {
           attemptsBefore: new Date(now - retention.attemptDays * DAY_MS),
           leadsBefore: new Date(now - retention.leadDays * DAY_MS),
         });
+        purged += await purgeAssessments(tx, new Date(now - retention.assessmentDays * DAY_MS));
         this.lastPurge = now;
       }
       const deliveries = await pendingDeliveries(tx, new Date(now - 5 * 60_000), MAX_DELIVERY_ATTEMPTS, 50);

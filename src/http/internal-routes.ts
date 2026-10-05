@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import express, { Router, type Request, type RequestHandler, type Response } from 'express';
 import { z } from 'zod';
@@ -7,8 +7,13 @@ import { decideConversion, exclusionCandidates, markExported, qualifiedForExport
 import { randomId, safeEqual } from '../crypto/keyring.ts';
 import { correlation, type RequestIntegrity } from '../guard/inspect.ts';
 import { serializeCookie } from '../identity/cookies.ts';
+import { storedEvidenceBundle } from '../ads/evidence.ts';
+import { campaignRecommendation } from '../ads/recommendations.ts';
+import { acceptLabel } from '../feedback/labels.ts';
+import { assessmentById, campaignAbuse, clusterSummary, insertLabel, recentAssessments } from '../operator/queries.ts';
 import { AUTOMATION_FLAGS } from '../risk/context.ts';
 import type { Runtime } from '../runtime.ts';
+import { cloudflareListPayload, proposeEdgeAction } from '../upstream/lists.ts';
 import { noStore, originState } from './responses.ts';
 
 const DAY_MS = 86_400_000;
@@ -29,6 +34,33 @@ const beaconSchema = z.object({
       selenium: z.boolean(),
       playwright: z.boolean(),
       viewport: z.tuple([z.number().int().min(0).max(100_000), z.number().int().min(0).max(100_000)]),
+      chromeRuntime: z.boolean(),
+      safariPush: z.boolean(),
+      installTrigger: z.boolean(),
+    })
+    .partial()
+    .optional(),
+  snapshot: z
+    .object({
+      platform: z.string().max(64),
+      vendor: z.string().max(64),
+      languages: z.array(z.string().max(16)).max(12),
+      timezone: z.string().max(64),
+      locale: z.string().max(32),
+      hardwareConcurrency: z.number().int().min(0).max(256),
+      deviceMemory: z.number().min(0).max(128),
+      maxTouchPoints: z.number().int().min(0).max(64),
+      touch: z.boolean(),
+      pointerFine: z.boolean(),
+      dpr: z.number().min(0).max(8),
+      screen: z.tuple([z.number().int().min(0).max(100_000), z.number().int().min(0).max(100_000)]),
+      viewport: z.tuple([z.number().int().min(0).max(100_000), z.number().int().min(0).max(100_000)]),
+      cookieEnabled: z.boolean(),
+      storage: z.boolean(),
+      pointerCv: z.number().min(0).max(10),
+      keyCv: z.number().min(0).max(10),
+      scrollCv: z.number().min(0).max(10),
+      dwellMs: z.number().int().min(0).max(DAY_MS),
     })
     .partial()
     .optional(),
@@ -93,6 +125,20 @@ export function createInternalRouter(runtime: Runtime, integrityOf: (req: Reques
 
     const interaction = parsed.data.interaction;
     const interacted = Boolean(interaction && ((interaction.pointer ?? 0) + (interaction.keys ?? 0) + (interaction.touch ?? 0) + (interaction.scroll ?? 0) > 0));
+    if (parsed.data.snapshot) {
+      runtime.snapshots.set(identity.visitorId, {
+        ...parsed.data.snapshot,
+        webdriver: parsed.data.automation?.webdriver,
+        headless: parsed.data.automation?.headless,
+        selenium: parsed.data.automation?.selenium,
+        playwright: parsed.data.automation?.playwright,
+        phantom: parsed.data.automation?.phantom,
+        chromeRuntime: parsed.data.automation?.chromeRuntime,
+        safariPush: parsed.data.automation?.safariPush,
+        installTrigger: parsed.data.automation?.installTrigger,
+        dwellMs: parsed.data.snapshot.dwellMs ?? parsed.data.interaction?.dwellMs,
+      }, now);
+    }
     await store.patchVisitor(
       identity.visitorId,
       {
@@ -103,7 +149,7 @@ export function createInternalRouter(runtime: Runtime, integrityOf: (req: Reques
     );
   };
 
-  router.post('/beacon', express.text({ type: ['text/plain', 'application/json'], limit: '4kb' }), (req, res) => {
+  router.post('/beacon', express.text({ type: ['text/plain', 'application/json'], limit: '8kb' }), (req, res) => {
     res.status(204).end();
     recordBeacon(req).catch((error: unknown) => runtime.logger.warn({ err: error }, 'beacon processing failed'));
   });
@@ -275,6 +321,133 @@ export function createInternalRouter(runtime: Runtime, integrityOf: (req: Reques
     const minVisits = clampNumber(req.query.minVisits, 1, 10_000, 3);
     const candidates = await exclusionCandidates(db, new Date(runtime.clock() - days * DAY_MS), minScore, minVisits);
     res.json({ candidates: candidates.map((candidate) => ({ ...candidate, googleAds: googleAdsExclusion(candidate) })) });
+  });
+
+  router.get('/admin/sessions.json', bearer, async (req, res) => {
+    const db = database(res);
+    if (!db) return;
+    await runtime.eventsLog.flush();
+    const hours = clampNumber(req.query.hours, 1, 24 * 90, 24);
+    const minScore = clampNumber(req.query.minScore, 0, 100, 20);
+    res.json({ sessions: await recentAssessments(db, new Date(runtime.clock() - hours * 3_600_000), { minScore, paid: req.query.paid === 'true' }) });
+  });
+
+  router.get('/admin/evidence/:id.json', bearer, async (req, res) => {
+    const db = database(res);
+    if (!db) return;
+    await runtime.eventsLog.flush();
+    const id = String(req.params.id ?? '');
+    if (!/^[0-9a-f-]{36}$/i.test(id)) {
+      res.status(400).json({ error: 'invalid_request' });
+      return;
+    }
+    const row = await assessmentById(db, id);
+    if (!row) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    res.json(
+      storedEvidenceBundle({
+        id: String(row.id),
+        created_at: row.created_at as Date | string,
+        visitor_id: (row.visitor_id as string | null) ?? null,
+        session_id: (row.session_id as string | null) ?? null,
+        campaign_id: (row.campaign_id as string | null) ?? null,
+        score: Number(row.score),
+        decision: String(row.decision),
+        reasons: (row.reasons as string[] | null) ?? [],
+        cohort: (row.cohort as string | null) ?? null,
+        cluster_kind: (row.cluster_kind as string | null) ?? null,
+        fraud_probability: (row.fraud_probability as number | null) ?? null,
+        policy_version: String(row.policy_version),
+        detector_version: String(row.detector_version),
+        model_version: (row.model_version as string | null) ?? null,
+        paid: Boolean(row.paid),
+        network_prefix: String(row.network_prefix),
+        asn: (row.asn as number | string | null) ?? null,
+      }),
+    );
+  });
+
+  router.get('/admin/campaigns.json', bearer, async (req, res) => {
+    const db = database(res);
+    if (!db) return;
+    await runtime.eventsLog.flush();
+    const hours = clampNumber(req.query.hours, 1, 24 * 90, 24);
+    const rows = await campaignAbuse(db, new Date(runtime.clock() - hours * 3_600_000));
+    res.json({
+      campaigns: rows.map((row) => ({
+        ...row,
+        recommendation: campaignRecommendation({
+          campaign: String(row.campaign),
+          visits: Number(row.visits),
+          suspicious: Number(row.suspicious),
+          cpcUsd: config.ads.cpcUsd,
+        }),
+      })),
+    });
+  });
+
+  router.get('/admin/clusters.json', bearer, async (req, res) => {
+    const db = database(res);
+    if (!db) return;
+    await runtime.eventsLog.flush();
+    const hours = clampNumber(req.query.hours, 1, 24 * 90, 24);
+    res.json({ clusters: await clusterSummary(db, new Date(runtime.clock() - hours * 3_600_000)) });
+  });
+
+  router.get('/admin/edge-lists.json', bearer, (_req, res) => {
+    const proposed = proposeEdgeAction({
+      decision: 'TEMPORARILY_RESTRICT',
+      numericConfidence: 0.93,
+      clusterSize: 12,
+      personalAddress: true,
+      ipHash: 'preview',
+      reasons: ['graph.behavior_cluster'],
+    });
+    res.json({
+      note: 'Lists are short-lived proposals. Automatic edge blocks require high confidence and are never applied from this endpoint.',
+      lists: proposed ? cloudflareListPayload([proposed]) : [],
+    });
+  });
+
+  const labelSchema = z.object({
+    subjectType: z.enum(['assessment', 'visitor', 'lead', 'conversion', 'cluster']),
+    subjectId: z.string().min(1).max(80),
+    label: z.enum([
+      'legitimate',
+      'suspicious',
+      'fraud',
+      'qualified_conversion',
+      'unqualified_conversion',
+      'duplicate',
+      'spam',
+      'customer',
+      'rejected_lead',
+      'chargeback',
+    ]),
+    source: z.enum(['operator', 'crm']).default('operator'),
+    confidence: z.number().min(0).max(1).default(1),
+    provenance: z.string().min(3).max(200),
+    notes: z.string().max(500).optional(),
+  });
+
+  router.post('/admin/labels', bearer, express.json({ limit: '4kb' }), async (req, res) => {
+    const db = database(res);
+    if (!db) return;
+    const parsed = labelSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_request' });
+      return;
+    }
+    const accepted = acceptLabel({ ...parsed.data, id: randomUUID(), createdAt: new Date(runtime.clock()) });
+    if (!accepted) {
+      res.status(400).json({ error: 'invalid_request' });
+      return;
+    }
+    await insertLabel(db, accepted);
+    runtime.metrics.labels.inc({ label: accepted.label });
+    res.status(201).json({ id: accepted.id, label: accepted.label });
   });
 
   return router;

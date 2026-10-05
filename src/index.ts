@@ -11,3 +11,7 @@ export { DEFAULT_POLICY, buildPolicy, type RiskPolicy } from './risk/policy.ts';
 export { assessRisk } from './risk/engine.ts';
 export type { RiskAssessment, RiskDecision, RiskReason, RiskSignal } from './risk/types.ts';
 export { createRuntime, type Runtime, type RuntimeOverrides } from './runtime.ts';
+export { extractFeatures } from './model/features.ts';
+export { runEvaluation } from './eval/run.ts';
+export { Intelligence } from './intel/engine.ts';
+export { evidenceBundle } from './ads/evidence.ts';

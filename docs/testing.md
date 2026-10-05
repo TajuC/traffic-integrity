@@ -5,9 +5,10 @@ The suites use Node's built-in test runner and run TypeScript directly through N
 ```bash
 npm test
 TEST_REDIS_URL=redis://127.0.0.1:6379/0 npm test
+TEST_DATABASE_URL=postgres://traffic:password@127.0.0.1:5432/traffic npm test
 ```
 
-Without `TEST_REDIS_URL` the Redis contract and the multi-instance suite are skipped and everything else runs against the in-process store and an in-process PostgreSQL engine (PGlite), so no external service is needed. With it, the same store contract runs against real Redis and three application instances share one Redis. A disposable Redis for the second form:
+Without `TEST_REDIS_URL` the Redis contract and the multi-instance suite are skipped and everything else runs against the in-process store and an in-process PostgreSQL engine (PGlite), so no external service is needed. With it, the same store contract runs against real Redis and three application instances share one Redis. With `TEST_DATABASE_URL`, conversion and migration tests use a unique schema on that server. A disposable Redis for the second form:
 
 ```bash
 docker run -d --name ti-redis -p 6390:6379 redis:7.4-alpine
@@ -25,6 +26,9 @@ TEST_REDIS_URL=redis://127.0.0.1:6390/0 npm test
 | `test/conversion.test.ts` | End-to-end lead pipeline against PostgreSQL |
 | `test/redis-e2e.test.ts` | Several application instances sharing one Redis |
 | `test/config.test.ts`, `test/data.test.ts` | Configuration validation, migrations, network data refresh, Google Ads export formats |
+| `test/eval.test.ts` | Synthetic labeled evaluation, including documented stealth and residential gaps |
+| `test/adversarial.test.ts` | HTTP attacker classes (curl, python-requests, headless, residential rotation, click reuse) |
+| `test/platform.test.ts`, `test/platform-ops.test.ts` | Consistency, cohorts, graph, baselines, labels, upstream lists, model |
 
 ## Required scenarios
 

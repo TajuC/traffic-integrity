@@ -40,9 +40,22 @@ export interface RiskPolicy {
     readonly visitorConversionsPerDay: number;
     readonly networkConversionsPerHour: { readonly base: number; readonly perMember: number };
     readonly mechanicalTiming: { readonly minSamples: number; readonly maxCv: number; readonly maxMeanMs: number };
+    readonly burstiness: { readonly minSamples: number; readonly minBurst: number };
+    readonly pathEntropy: { readonly minDepth: number; readonly maxEntropy: number };
+    readonly pointerMechanicalCv: number;
+    readonly conversionTimingMs: number;
     readonly form: { readonly minFillMs: number; readonly maxAgeMs: number };
     readonly repeatedMessageContacts: number;
     readonly repeatOffender: { readonly elevated: number; readonly extreme: number };
+    readonly graph: {
+      readonly behavior: number;
+      readonly device: number;
+      readonly timing: number;
+      readonly click: number;
+      readonly campaign: number;
+      readonly lead: number;
+    };
+    readonly baseline: { readonly spikeZ: number; readonly conversionDropZ: number };
   };
   readonly restriction: {
     readonly durationSeconds: number;
@@ -63,6 +76,9 @@ export interface RiskPolicy {
 const DEFAULT_POINTS: Record<RiskReason, number> = {
   'network.hosting': 22,
   'network.tor': 18,
+  'network.vpn': 16,
+  'network.residential_proxy': 20,
+  'network.public_proxy': 16,
   'network.origin_bypass': 40,
   'network.address_velocity': 15,
   'network.address_velocity_extreme': 35,
@@ -84,6 +100,16 @@ const DEFAULT_POINTS: Record<RiskReason, number> = {
   'client.accept_language_missing': 8,
   'client.forged_identity': 15,
   'client.script_automation': 35,
+
+  'client.impossible_combination': 32,
+  'client.platform_os_mismatch': 18,
+  'client.mobile_touch_mismatch': 16,
+  'client.hints_mobile_mismatch': 10,
+  'client.feature_family_mismatch': 30,
+  'client.hardware_inconsistency': 10,
+  'client.timezone_locale_mismatch': 6,
+  'client.storage_inconsistency': 8,
+  'client.transport_mismatch': 18,
 
   'paid.visitor_click_velocity': 30,
   'paid.visitor_click_velocity_extreme': 45,
@@ -108,9 +134,27 @@ const DEFAULT_POINTS: Record<RiskReason, number> = {
   'behavior.form_token_expired': 8,
   'behavior.form_token_replayed': 60,
   'behavior.repeated_message': 20,
+  'behavior.burstiness': 16,
+  'behavior.low_path_entropy': 14,
+  'behavior.timing_clone': 28,
+  'behavior.pointer_mechanical': 10,
+  'behavior.conversion_timing': 18,
+  'behavior.session_template': 16,
 
   'edge.bot_score_automated': 55,
   'edge.bot_score_likely': 35,
+
+  'graph.behavior_cluster': 28,
+  'graph.device_cluster': 18,
+  'graph.timing_cluster': 24,
+  'graph.click_cluster': 30,
+  'graph.campaign_cluster': 20,
+  'graph.lead_cluster': 32,
+
+  'baseline.campaign_spike': 26,
+  'baseline.conversion_rate_drop': 16,
+  'baseline.asn_dominance': 14,
+  'baseline.identity_spike': 16,
 
   'trust.established_visitor': 12,
   'trust.engaged_session': 10,
@@ -123,10 +167,10 @@ const DEFAULT_POINTS: Record<RiskReason, number> = {
 };
 
 export const DEFAULT_POLICY: RiskPolicy = {
-  version: '2026.10.1',
+  version: '2026.10.2',
   thresholds: { monitor: 20, challenge: 45, restrict: 70, block: 90 },
   conversionThresholds: { monitor: 15, challenge: 30, restrict: 60, block: 85 },
-  familyCaps: { network: 45, client: 45, paid: 45, behavior: 75, edge: 60 },
+  familyCaps: { network: 45, client: 45, paid: 45, behavior: 75, edge: 60, graph: 40, baseline: 35, consistency: 40 },
   familyDecay: 0.5,
   trust: { maxCredit: 35, highSeverityFactor: 0.5, criticalSeverityFactor: 0 },
   blockMinHighFamilies: 2,
@@ -143,9 +187,15 @@ export const DEFAULT_POLICY: RiskPolicy = {
     visitorConversionsPerDay: 4,
     networkConversionsPerHour: { base: 6, perMember: 1 },
     mechanicalTiming: { minSamples: 8, maxCv: 0.12, maxMeanMs: 15_000 },
+    burstiness: { minSamples: 8, minBurst: 0.88 },
+    pathEntropy: { minDepth: 4, maxEntropy: 0.55 },
+    pointerMechanicalCv: 0.06,
+    conversionTimingMs: 3_000,
     form: { minFillMs: 2_500, maxAgeMs: 2 * 60 * 60 * 1000 },
     repeatedMessageContacts: 3,
     repeatOffender: { elevated: 1, extreme: 3 },
+    graph: { behavior: 8, device: 12, timing: 10, click: 4, campaign: 25, lead: 5 },
+    baseline: { spikeZ: 4, conversionDropZ: 3 },
   },
   restriction: { durationSeconds: 600, blockDurationSeconds: 3600, maxSharedPopulation: 2, maxEscalation: 4 },
   established: { populationCookieAgeSeconds: 3600, trustedCookieAgeSeconds: 86_400, trustedMinSessions: 2 },
@@ -174,7 +224,9 @@ const policySchema = z
     version: z.string().min(1).max(40),
     thresholds: thresholdsSchema,
     conversionThresholds: thresholdsSchema,
-    familyCaps: z.object({ network: score, client: score, paid: score, behavior: score, edge: score }).strict(),
+    familyCaps: z
+      .object({ network: score, client: score, paid: score, behavior: score, edge: score, graph: score, baseline: score, consistency: score })
+      .strict(),
     familyDecay: z.number().min(0).max(1),
     trust: z
       .object({ maxCredit: score, highSeverityFactor: z.number().min(0).max(1), criticalSeverityFactor: z.number().min(0).max(1) })
@@ -196,9 +248,17 @@ const policySchema = z
         visitorConversionsPerDay: positive,
         networkConversionsPerHour: z.object({ base: positive, perMember: count }).strict(),
         mechanicalTiming: z.object({ minSamples: positive, maxCv: positive, maxMeanMs: positive }).strict(),
+        burstiness: z.object({ minSamples: positive, minBurst: z.number().min(0).max(1) }).strict(),
+        pathEntropy: z.object({ minDepth: positive, maxEntropy: z.number().min(0).max(8) }).strict(),
+        pointerMechanicalCv: z.number().min(0).max(1),
+        conversionTimingMs: positive,
         form: z.object({ minFillMs: count, maxAgeMs: positive }).strict(),
         repeatedMessageContacts: positive,
         repeatOffender: z.object({ elevated: positive, extreme: positive }).strict(),
+        graph: z
+          .object({ behavior: positive, device: positive, timing: positive, click: positive, campaign: positive, lead: positive })
+          .strict(),
+        baseline: z.object({ spikeZ: z.number().min(1), conversionDropZ: z.number().min(1) }).strict(),
       })
       .strict(),
     restriction: z
