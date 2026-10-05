@@ -1,0 +1,75 @@
+﻿{
+  "name": "traffic-integrity",
+  "version": "1.0.0",
+  "description": "Paid traffic integrity layer: bot and click-abuse telemetry, progressive enforcement and server-validated conversions for sites that buy Google Ads traffic",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "author": "TajuC",
+  "homepage": "https://github.com/TajuC/traffic-integrity",
+  "bugs": {
+    "url": "https://github.com/TajuC/traffic-integrity/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TajuC/traffic-integrity.git"
+  },
+  "keywords": [
+    "express",
+    "google-ads",
+    "bot-detection",
+    "anti-abuse",
+    "conversion-tracking",
+    "turnstile",
+    "redis"
+  ],
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "migrations",
+    "public"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/server.js",
+    "dev": "node --env-file-if-exists=.env src/server.ts",
+    "typecheck": "tsc -p tsconfig.json",
+    "lint": "eslint .",
+    "test": "node --test --test-concurrency=1 \"test/**/*.test.ts\"",
+    "bench": "node test/bench.ts",
+    "migrate": "node --env-file-if-exists=.env dist/cli/migrate.js",
+    "intel:refresh": "node dist/cli/refresh-intel.js",
+    "conversions:export": "node --env-file-if-exists=.env dist/cli/export-conversions.js",
+    "check": "npm run typecheck && npm run lint && npm test && npm run build"
+  },
+  "dependencies": {
+    "@prometheus-io/client": "^0.16.1",
+    "express": "^5.2.1",
+    "ioredis": "^6.0.0",
+    "maxmind": "^5.0.7",
+    "pg": "^8.23.1",
+    "pino": "^10.4.0",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
+    "@eslint/js": "^10.0.1",
+    "@types/express": "^5.0.6",
+    "@types/node": "^24.0.0",
+    "@types/pg": "^8.23.1",
+    "eslint": "^10.12.0",
+    "globals": "^17.13.0",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.71.0"
+  }
+}

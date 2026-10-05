@@ -1,0 +1,77 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: #1d2330;
+  background: #f6f7f9;
+}
+
+.page {
+  max-width: 40rem;
+  margin: 0 auto;
+  padding: 3rem 1.25rem;
+}
+
+.intro h1 {
+  margin: 0 0 0.5rem;
+  font-size: 2rem;
+}
+
+.lead-form {
+  display: grid;
+  gap: 1rem;
+  margin-top: 2rem;
+  padding: 1.5rem;
+  background: #fff;
+  border: 1px solid #e3e6eb;
+  border-radius: 12px;
+}
+
+.lead-form label {
+  display: grid;
+  gap: 0.35rem;
+  font-weight: 600;
+}
+
+.lead-form input,
+.lead-form textarea {
+  font: inherit;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid #c9ced6;
+  border-radius: 8px;
+}
+
+.lead-form button {
+  font: inherit;
+  font-weight: 600;
+  padding: 0.75rem 1rem;
+  color: #fff;
+  background: #1f5eff;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.lead-form button:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.form-status[data-tone="success"] {
+  color: #136c2e;
+}
+
+.form-status[data-tone="error"] {
+  color: #a3271b;
+}
+
+.ti-challenge {
+  position: fixed;
+  inset: auto 1rem 1rem auto;
+  z-index: 1000;
+}

@@ -1,0 +1,8 @@
+title = "traffic-integrity"
+
+[allowlist]
+description = "Documented placeholders and Cloudflare public testing keys"
+paths = [
+  '''^\.env\.example$''',
+  '''^docs/''',
+]
