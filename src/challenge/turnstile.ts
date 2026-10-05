@@ -103,7 +103,7 @@ export class CloudflareTurnstile implements TurnstileVerifier {
         }
         payload = await response.json();
       } catch (error) {
-        lastError = error instanceof Error && error.name === 'TimeoutError' ? 'timeout' : 'network_error';
+        lastError = error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError') ? 'timeout' : 'network_error';
       }
     }
     if (payload === undefined) return { status: 'unavailable', reason: lastError };

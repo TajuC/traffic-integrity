@@ -10,7 +10,27 @@ interface Call {
 }
 
 function hang(signal: AbortSignal | undefined): Promise<Response> {
-  return new Promise((_resolve, reject) => signal?.addEventListener('abort', () => reject(signal.reason as Error)));
+  return new Promise((_resolve, reject) => {
+    const fail = () => {
+      const reason = signal?.reason;
+      reject(reason instanceof Error ? reason : Object.assign(new Error('timed out'), { name: 'TimeoutError' }));
+    };
+    const timer = setTimeout(fail, 80);
+    if (!signal) return;
+    if (signal.aborted) {
+      clearTimeout(timer);
+      fail();
+      return;
+    }
+    signal.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(timer);
+        fail();
+      },
+      { once: true },
+    );
+  });
 }
 
 function verifier(responder: (call: Call, attempt: number) => Response | Promise<Response>, now = START, allowTestKeys = false) {
